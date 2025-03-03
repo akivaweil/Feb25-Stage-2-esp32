@@ -136,15 +136,15 @@ namespace Motion {
     constexpr float FORWARD_DISTANCE = 28.0;
     
     // Speed Settings (steps/second)
-    constexpr float HOMING_SPEED = 400;
-    constexpr float APPROACH_SPEED = 30000;
-    constexpr float CUTTING_SPEED = 150;
+    constexpr float HOMING_SPEED = 1000;
+    constexpr float APPROACH_SPEED = 20000;
+    constexpr float CUTTING_SPEED = 200;
     constexpr float FINISH_SPEED = 20000;
     constexpr float RETURN_SPEED = 20000;
     
     // Acceleration Settings (steps/second^2)
-    constexpr float FORWARD_ACCEL = 20000;
-    constexpr float RETURN_ACCEL = 20000;
+    constexpr float FORWARD_ACCEL = 30000;
+    constexpr float RETURN_ACCEL = 30000;
 }
 
 // Timing Settings (milliseconds)
@@ -152,9 +152,10 @@ namespace Timing {
     constexpr int CLAMP_ENGAGE_TIME = 300;
     constexpr int CLAMP_RELEASE_TIME = 300;
     constexpr int HOME_SETTLE_TIME = 50;
-    constexpr int MOTION_SETTLE_TIME = 50;
+    constexpr int MOTION_SETTLE_TIME = 100;
     constexpr int ALIGNMENT_TIME = 150;
     constexpr int LEFT_CLAMP_RETRACT_WAIT = 100;
+    constexpr int CLAMP_RELEASE_SETTLE_TIME = 200;
 }
 
 // System state
@@ -190,7 +191,7 @@ void staggeredReleaseClamps();
 
 void setup() {
     Serial.begin(115200);
-    // delay(1000); // Removed startup delay
+    delay(100); // Startup delay to allow system to stabilize
     // Serial.println("\n🏭 Automated Table Saw Control System Starting..."); // DO NOT DELETE
     
     initializeHardware();
@@ -253,7 +254,9 @@ void initializeHardware() {
     
     // Initialize stepper
     digitalWrite(Pins::ENABLE, HIGH);  // Disable briefly
+    delay(100);                       // Wait 1 second for motor to reset
     digitalWrite(Pins::ENABLE, LOW);   // Enable
+    delay(50);                        // Wait for enable to take effect
     
     stepper.setMaxSpeed(Motion::APPROACH_SPEED);
     stepper.setAcceleration(Motion::FORWARD_ACCEL);
@@ -266,22 +269,52 @@ void performHomingSequence() {
     currentState = SystemState::HOMING;
     
     // Clamps are already engaged from initialization
-    // Configure for homing motion
+    
+    // First, move a significant distance in the negative direction to ensure we're past the home switch
     stepper.setMaxSpeed(Motion::HOMING_SPEED);
     stepper.setAcceleration(Motion::FORWARD_ACCEL);
-    stepper.setSpeed(-Motion::HOMING_SPEED);  // Negative for homing direction
+    stepper.moveTo(-10000); // Move 10,000 steps in negative direction
     
-    // Move towards home switch
-    while (true) {
+    // Run until we hit the home switch or reach the target
+    while (stepper.distanceToGo() != 0) {
         homeSwitch.update();
+        
+        // Calculate current speed
+        float currentSpeed = abs(stepper.speed());
+        
+        // If we're moving too fast and close to home switch, slow down
+        if (currentSpeed > Motion::HOMING_SPEED / 2) {  // If moving faster than half homing speed
+            // Calculate distance to potential home switch (assuming it's at position 0)
+            float distanceToHome = abs(stepper.currentPosition());
+            
+            // If we're within 1000 steps of home, start slowing down
+            if (distanceToHome < 1000) {
+                // Gradually reduce speed as we get closer
+                float newSpeed = map(distanceToHome, 1000, 0, Motion::HOMING_SPEED, Motion::HOMING_SPEED / 4);
+                stepper.setMaxSpeed(newSpeed);
+            }
+        }
+        
         if (homeSwitch.read() == HIGH) {
+            // When home switch is triggered, gradually stop
+            stepper.setMaxSpeed(Motion::HOMING_SPEED / 8);  // Very slow final speed
+            stepper.run();
+            delay(50);  // Small delay to ensure smooth stop
+            stepper.stop();
             stepper.setCurrentPosition(0);
             break;
         }
-        stepper.runSpeed();
+        stepper.run();
     }
     
-    // Move to home offset
+    // If we didn't hit the home switch, we have a problem
+    if (homeSwitch.read() == LOW) {
+        // Serial.println("⚠️ Failed to find home switch during initial homing!"); // DO NOT DELETE
+        currentState = SystemState::ERROR;
+        return;
+    }
+    
+    // Now move to home offset with controlled motion
     moveStepperToPosition(Motion::HOME_OFFSET, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
     
     // Now that we're at home position, release the clamps
@@ -314,26 +347,51 @@ void runCuttingCycle() {
     // Cutting phase
     // Serial.println("🔪 Cutting phase..."); // DO NOT DELETE
     moveStepperToPosition(Motion::APPROACH_DISTANCE + Motion::CUTTING_DISTANCE, 
-                         Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
+                         Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL * 2);
     
     // Finish phase
     // Serial.println("🏁 Finish phase..."); // DO NOT DELETE
     moveStepperToPosition(Motion::FORWARD_DISTANCE, Motion::FINISH_SPEED, Motion::FORWARD_ACCEL);
     
-    delay(Timing::MOTION_SETTLE_TIME);
+    // Ensure motor has completely stopped
+    stepper.stop();
+    delay(Timing::MOTION_SETTLE_TIME * 2);  // Double the settle time
+    
+    // Verify position before releasing clamps
+    float finalPosition = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
+    if (abs(finalPosition - Motion::FORWARD_DISTANCE) > 0.1) {  // If more than 0.1 inches off
+        // Serial.println("⚠️ Position error at forward position!"); // DO NOT DELETE
+        // Try to correct position
+        moveStepperToPosition(Motion::FORWARD_DISTANCE, Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
+        stepper.stop();
+        delay(Timing::MOTION_SETTLE_TIME);
+    }
+    
+    // Store the position before releasing clamps
+    long positionBeforeRelease = stepper.currentPosition();
     
     // Release both clamps simultaneously
     releaseClamps();
     
-    // Add extra delay before return movement
-    delay(500);  // Extra half second wait
+    // Add extra settle time after clamp release
+    delay(Timing::CLAMP_RELEASE_SETTLE_TIME);
+    
+    // Verify position hasn't changed significantly after clamp release
+    if (abs(stepper.currentPosition() - positionBeforeRelease) > Motion::STEPS_PER_INCH / 4) {  // If position changed by more than 1/4 inch
+        // Serial.println("⚠️ Position shifted during clamp release!"); // DO NOT DELETE
+        // Try to correct position before return
+        moveStepperToPosition(Motion::FORWARD_DISTANCE, Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
+        stepper.stop();
+        delay(Timing::MOTION_SETTLE_TIME);
+    }
     
     // Return phase - first try with fast return speed
     // Serial.println("🏠 Return to home phase..."); // DO NOT DELETE
     
     // Check if home switch is already triggered (which would be unexpected)
     homeSwitch.update();
-    if (homeSwitch.read() == HIGH) {
+    float currentPosInches = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
+    if (homeSwitch.read() == HIGH && currentPosInches >= 0 && currentPosInches <= 5.0) {
         // Serial.println("⚠️ Home sensor already triggered - belt may have slipped!"); // DO NOT DELETE
         // We're already at home, set position to 0
         stepper.setCurrentPosition(0);
@@ -351,12 +409,15 @@ void runCuttingCycle() {
         while (stepper.distanceToGo() != 0) {
             stepper.run();
             
-            // Check if we've reached home
-            homeSwitch.update();
-            if (homeSwitch.read() == HIGH) {
-                stepper.setCurrentPosition(0);
-                // Serial.println("Home reached with fast return!"); // DO NOT DELETE
-                break;
+            // Check home switch when we're within reasonable distance of where we expect home to be
+            currentPosInches = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
+            if (currentPosInches >= 0 && currentPosInches <= 5.0) {
+                homeSwitch.update();
+                if (homeSwitch.read() == HIGH) {
+                    stepper.setCurrentPosition(0);
+                    // Serial.println("Home reached with fast return!"); // DO NOT DELETE
+                    break;
+                }
             }
             
             // Check for timeout or if motor is stuck
@@ -383,7 +444,7 @@ void runCuttingCycle() {
             
             while (true) {
                 homeSwitch.update();
-                if (homeSwitch.read() == HIGH) {
+                if (homeSwitch.read() == HIGH) {  // In slow homing, accept any home trigger
                     stepper.setCurrentPosition(0);
                     // Serial.println("Home reached with slow homing!"); // DO NOT DELETE
                     break;
@@ -513,7 +574,7 @@ void printSystemStatus() {
         case SystemState::READY: /* Serial.println("READY"); */ break;
         case SystemState::CYCLE_RUNNING: /* Serial.println("CYCLE RUNNING"); */ break;
         case SystemState::ERROR: /* Serial.println("ERROR"); */ break;
-        default: /* Serial.println("UNKNOWN"); */
+        default: /* Serial.println("UNKNOWN"); */ break;
     }
     
     // Print position
@@ -541,30 +602,30 @@ void printSystemStatus() {
 }
 
 void printCurrentSettings() {
-    Serial.println("\n⚙️ Current Settings:");
-    Serial.println("Motion Parameters:");
-    Serial.print("- Steps per inch: "); Serial.println(Motion::STEPS_PER_INCH);
-    Serial.print("- Home offset: "); Serial.println(Motion::HOME_OFFSET);
-    Serial.print("- Approach distance: "); Serial.println(Motion::APPROACH_DISTANCE);
-    Serial.print("- Cutting distance: "); Serial.println(Motion::CUTTING_DISTANCE);
-    Serial.print("- Forward distance: "); Serial.println(Motion::FORWARD_DISTANCE);
+    // Serial.println("\n⚙️ Current Settings:"); // DO NOT DELETE
+    // Serial.println("Motion Parameters:"); // DO NOT DELETE
+    // Serial.print("- Steps per inch: "); Serial.println(Motion::STEPS_PER_INCH); // DO NOT DELETE
+    // Serial.print("- Home offset: "); Serial.println(Motion::HOME_OFFSET); // DO NOT DELETE
+    // Serial.print("- Approach distance: "); Serial.println(Motion::APPROACH_DISTANCE); // DO NOT DELETE
+    // Serial.print("- Cutting distance: "); Serial.println(Motion::CUTTING_DISTANCE); // DO NOT DELETE
+    // Serial.print("- Forward distance: "); Serial.println(Motion::FORWARD_DISTANCE); // DO NOT DELETE
     
-    Serial.println("\nSpeed Settings (steps/sec):");
-    Serial.print("- Homing: "); Serial.println(Motion::HOMING_SPEED);
-    Serial.print("- Approach: "); Serial.println(Motion::APPROACH_SPEED);
-    Serial.print("- Cutting: "); Serial.println(Motion::CUTTING_SPEED);
-    Serial.print("- Finish: "); Serial.println(Motion::FINISH_SPEED);
-    Serial.print("- Return: "); Serial.println(Motion::RETURN_SPEED);
+    // Serial.println("\nSpeed Settings (steps/sec):"); // DO NOT DELETE
+    // Serial.print("- Homing: "); Serial.println(Motion::HOMING_SPEED); // DO NOT DELETE
+    // Serial.print("- Approach: "); Serial.println(Motion::APPROACH_SPEED); // DO NOT DELETE
+    // Serial.print("- Cutting: "); Serial.println(Motion::CUTTING_SPEED); // DO NOT DELETE
+    // Serial.print("- Finish: "); Serial.println(Motion::FINISH_SPEED); // DO NOT DELETE
+    // Serial.print("- Return: "); Serial.println(Motion::RETURN_SPEED); // DO NOT DELETE
     
-    Serial.println("\nAcceleration Settings (steps/sec²):");
-    Serial.print("- Forward: "); Serial.println(Motion::FORWARD_ACCEL);
-    Serial.print("- Return: "); Serial.println(Motion::RETURN_ACCEL);
+    // Serial.println("\nAcceleration Settings (steps/sec²):"); // DO NOT DELETE
+    // Serial.print("- Forward: "); Serial.println(Motion::FORWARD_ACCEL); // DO NOT DELETE
+    // Serial.print("- Return: "); Serial.println(Motion::RETURN_ACCEL); // DO NOT DELETE
     
-    Serial.println("\nTiming Settings (ms):");
-    Serial.print("- Clamp engage time: "); Serial.println(Timing::CLAMP_ENGAGE_TIME);
-    Serial.print("- Clamp release time: "); Serial.println(Timing::CLAMP_RELEASE_TIME);
-    Serial.print("- Home settle time: "); Serial.println(Timing::HOME_SETTLE_TIME);
-    Serial.print("- Motion settle time: "); Serial.println(Timing::MOTION_SETTLE_TIME);
-    Serial.println();
+    // Serial.println("\nTiming Settings (ms):"); // DO NOT DELETE
+    // Serial.print("- Clamp engage time: "); Serial.println(Timing::CLAMP_ENGAGE_TIME); // DO NOT DELETE
+    // Serial.print("- Clamp release time: "); Serial.println(Timing::CLAMP_RELEASE_TIME); // DO NOT DELETE
+    // Serial.print("- Home settle time: "); Serial.println(Timing::HOME_SETTLE_TIME); // DO NOT DELETE
+    // Serial.print("- Motion settle time: "); Serial.println(Timing::MOTION_SETTLE_TIME); // DO NOT DELETE
+    // Serial.println(); // DO NOT DELETE
 }
 
