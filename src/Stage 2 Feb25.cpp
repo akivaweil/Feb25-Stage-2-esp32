@@ -96,6 +96,16 @@
  *    - Required settling times between actions
  */
 
+/*
+ * AUTOMATED TABLE SAW CONTROL SYSTEM
+ * 
+ * SAFETY NOTICE: PLEASE DO NOT DELETE OR MODIFY ANYTHING HERE
+ * 
+ * IMPORTANT: All Serial.print() and Serial.println() statements have been commented out
+ * for performance reasons. DO NOT DELETE these statements as they provide valuable
+ * debugging information. Documentation and code comments should still be maintained.
+ */
+
 // ! ===============================================================================
 // ! 🛑 SAFETY NOTICE: DO NOT MODIFY WITHOUT APPROVAL
 // ! ===============================================================================
@@ -128,7 +138,7 @@ namespace Motion {
     // Speed Settings (steps/second)
     constexpr float HOMING_SPEED = 400;
     constexpr float APPROACH_SPEED = 30000;
-    constexpr float CUTTING_SPEED = 130;
+    constexpr float CUTTING_SPEED = 150;
     constexpr float FINISH_SPEED = 20000;
     constexpr float RETURN_SPEED = 20000;
     
@@ -140,7 +150,7 @@ namespace Motion {
 // Timing Settings (milliseconds)
 namespace Timing {
     constexpr int CLAMP_ENGAGE_TIME = 300;
-    constexpr int CLAMP_RELEASE_TIME = 100;
+    constexpr int CLAMP_RELEASE_TIME = 300;
     constexpr int HOME_SETTLE_TIME = 50;
     constexpr int MOTION_SETTLE_TIME = 50;
     constexpr int ALIGNMENT_TIME = 150;
@@ -180,14 +190,14 @@ void staggeredReleaseClamps();
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
-    Serial.println("\n🏭 Automated Table Saw Control System Starting...");
+    // delay(1000); // Removed startup delay
+    // Serial.println("\n🏭 Automated Table Saw Control System Starting..."); // DO NOT DELETE
     
     initializeHardware();
     performHomingSequence();
     
     currentState = SystemState::READY;
-    Serial.println("✅ System Ready!");
+    // Serial.println("✅ System Ready!"); // DO NOT DELETE
     printCurrentSettings();
 }
 
@@ -206,7 +216,7 @@ void loop() {
     
     // Check for cycle start (either from button or remote signal)
     if ((startButton.fell() || remoteStart.fell()) && currentState == SystemState::READY) {
-        Serial.println(startButton.fell() ? "🚀 Starting cycle from button..." : "🚀 Starting cycle from remote signal...");
+        // Serial.println(startButton.fell() ? "🚀 Starting cycle from button..." : "🚀 Starting cycle from remote signal..."); // DO NOT DELETE
         currentState = SystemState::CYCLE_RUNNING;
         runCuttingCycle();
         currentState = SystemState::READY;
@@ -243,18 +253,16 @@ void initializeHardware() {
     
     // Initialize stepper
     digitalWrite(Pins::ENABLE, HIGH);  // Disable briefly
-    delay(100);
     digitalWrite(Pins::ENABLE, LOW);   // Enable
-    delay(200);
     
     stepper.setMaxSpeed(Motion::APPROACH_SPEED);
     stepper.setAcceleration(Motion::FORWARD_ACCEL);
     
-    Serial.println("✅ Hardware initialized");
+    // Serial.println("✅ Hardware initialized"); // DO NOT DELETE
 }
 
 void performHomingSequence() {
-    Serial.println("🏠 Starting homing sequence...");
+    // Serial.println("🏠 Starting homing sequence..."); // DO NOT DELETE
     currentState = SystemState::HOMING;
     
     // Clamps are already engaged from initialization
@@ -273,16 +281,15 @@ void performHomingSequence() {
         stepper.runSpeed();
     }
     
-    delay(Timing::HOME_SETTLE_TIME);
-    
     // Move to home offset
     moveStepperToPosition(Motion::HOME_OFFSET, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
     
     // Now that we're at home position, release the clamps
-    releaseClamps();
+    digitalWrite(Pins::LEFT_CLAMP, HIGH);
+    digitalWrite(Pins::RIGHT_CLAMP, HIGH);
     
     isHomed = true;
-    Serial.println("✅ Homing complete");
+    // Serial.println("✅ Homing complete"); // DO NOT DELETE
 }
 
 void runCuttingCycle() {
@@ -301,38 +308,38 @@ void runCuttingCycle() {
     delay(Timing::CLAMP_ENGAGE_TIME);
 
     // Approach phase
-    Serial.println("🚀 Approach phase...");
+    // Serial.println("🚀 Approach phase..."); // DO NOT DELETE
     moveStepperToPosition(Motion::APPROACH_DISTANCE, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
     
     // Cutting phase
-    Serial.println("🔪 Cutting phase...");
+    // Serial.println("🔪 Cutting phase..."); // DO NOT DELETE
     moveStepperToPosition(Motion::APPROACH_DISTANCE + Motion::CUTTING_DISTANCE, 
                          Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
     
     // Finish phase
-    Serial.println("🏁 Finish phase...");
+    // Serial.println("🏁 Finish phase..."); // DO NOT DELETE
     moveStepperToPosition(Motion::FORWARD_DISTANCE, Motion::FINISH_SPEED, Motion::FORWARD_ACCEL);
     
     delay(Timing::MOTION_SETTLE_TIME);
     
-    // Staggered clamp release
-    staggeredReleaseClamps();
+    // Release both clamps simultaneously
+    releaseClamps();
     
     // Add extra delay before return movement
     delay(500);  // Extra half second wait
     
     // Return phase - first try with fast return speed
-    Serial.println("🏠 Return to home phase...");
+    // Serial.println("🏠 Return to home phase..."); // DO NOT DELETE
     
     // Check if home switch is already triggered (which would be unexpected)
     homeSwitch.update();
     if (homeSwitch.read() == HIGH) {
-        Serial.println("⚠️ Home sensor already triggered - belt may have slipped!");
+        // Serial.println("⚠️ Home sensor already triggered - belt may have slipped!"); // DO NOT DELETE
         // We're already at home, set position to 0
         stepper.setCurrentPosition(0);
     } else {
         // First attempt: Use fast return speed
-        Serial.println("Fast return to home...");
+        // Serial.println("Fast return to home..."); // DO NOT DELETE
         stepper.setMaxSpeed(Motion::RETURN_SPEED);
         stepper.setAcceleration(Motion::RETURN_ACCEL);
         stepper.moveTo(0); // Move to position 0
@@ -348,13 +355,13 @@ void runCuttingCycle() {
             homeSwitch.update();
             if (homeSwitch.read() == HIGH) {
                 stepper.setCurrentPosition(0);
-                Serial.println("Home reached with fast return!");
+                // Serial.println("Home reached with fast return!"); // DO NOT DELETE
                 break;
             }
             
             // Check for timeout or if motor is stuck
             if (millis() - fastReturnStartTime > fastReturnTimeout) {
-                Serial.println("⚠️ Fast return timeout - switching to slow homing...");
+                // Serial.println("⚠️ Fast return timeout - switching to slow homing..."); // DO NOT DELETE
                 break;
             }
         }
@@ -362,7 +369,7 @@ void runCuttingCycle() {
         // If we didn't reach home with fast return, use slow homing
         homeSwitch.update();
         if (homeSwitch.read() == LOW) {
-            Serial.println("Home not reached with fast return - switching to slow homing...");
+            // Serial.println("Home not reached with fast return - switching to slow homing..."); // DO NOT DELETE
             
             // Configure for slow homing motion
             stepper.setMaxSpeed(Motion::HOMING_SPEED);
@@ -370,7 +377,7 @@ void runCuttingCycle() {
             stepper.setSpeed(-Motion::HOMING_SPEED);  // Negative for homing direction
             
             // Move towards home switch
-            Serial.println("Seeking home switch with slow speed...");
+            // Serial.println("Seeking home switch with slow speed..."); // DO NOT DELETE
             unsigned long homingStartTime = millis();
             unsigned long homingTimeout = 30000; // 30 seconds timeout
             
@@ -378,13 +385,13 @@ void runCuttingCycle() {
                 homeSwitch.update();
                 if (homeSwitch.read() == HIGH) {
                     stepper.setCurrentPosition(0);
-                    Serial.println("Home reached with slow homing!");
+                    // Serial.println("Home reached with slow homing!"); // DO NOT DELETE
                     break;
                 }
                 
                 // Check for timeout
                 if (millis() - homingStartTime > homingTimeout) {
-                    Serial.println("⚠️ Homing timeout - could not find home switch!");
+                    // Serial.println("⚠️ Homing timeout - could not find home switch!"); // DO NOT DELETE
                     // Emergency stop
                     stepper.stop();
                     currentState = SystemState::ERROR;
@@ -399,10 +406,10 @@ void runCuttingCycle() {
     delay(Timing::HOME_SETTLE_TIME);
     
     // Move to home offset
-    Serial.println("Moving to home offset position...");
+    // Serial.println("Moving to home offset position..."); // DO NOT DELETE
     moveStepperToPosition(Motion::HOME_OFFSET, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
     
-    Serial.println("✅ Cycle complete!");
+    // Serial.println("✅ Cycle complete!"); // DO NOT DELETE
 }
 
 void moveStepperToPosition(float position, float speed, float acceleration) {
@@ -428,8 +435,8 @@ void moveStepperToPosition(float position, float speed, float acceleration) {
                 
                 // If home switch is triggered unexpectedly early
                 if (homeSwitch.read() == HIGH) {
-                    Serial.println("⚠️ Home sensor triggered earlier than expected!");
-                    Serial.println("Setting current position as new home (0)");
+                    // Serial.println("⚠️ Home sensor triggered earlier than expected!"); // DO NOT DELETE
+                    // Serial.println("Setting current position as new home (0)"); // DO NOT DELETE
                     
                     // Stop the motor
                     stepper.stop();
@@ -477,60 +484,60 @@ void handleSerialCommand(const String& command) {
         printSystemStatus();
     }
     else if (command == "home") {
-        Serial.println("🏠 Initiating homing sequence...");
+        // Serial.println("🏠 Initiating homing sequence..."); // DO NOT DELETE
         performHomingSequence();
     }
     else if (command == "settings") {
         printCurrentSettings();
     }
     else if (command == "help") {
-        Serial.println("\n📚 Available Commands:");
-        Serial.println("- status: Show current system status");
-        Serial.println("- home: Perform homing sequence");
-        Serial.println("- settings: Show current system settings");
-        Serial.println("- help: Show this help message");
+        // Serial.println("\n📚 Available Commands:"); // DO NOT DELETE
+        // Serial.println("- status: Show current system status"); // DO NOT DELETE
+        // Serial.println("- home: Perform homing sequence"); // DO NOT DELETE
+        // Serial.println("- settings: Show current system settings"); // DO NOT DELETE
+        // Serial.println("- help: Show this help message"); // DO NOT DELETE
     }
     else {
-        Serial.println("❌ Unknown command. Type 'help' for available commands.");
+        // Serial.println("❌ Unknown command. Type 'help' for available commands."); // DO NOT DELETE
     }
 }
 
 void printSystemStatus() {
-    Serial.println("\n📊 Current Status:");
+    // Serial.println("\n📊 Current Status:"); // DO NOT DELETE
     
     // Print state
-    Serial.print("System State: ");
+    // Serial.print("System State: "); // DO NOT DELETE
     switch (currentState) {
-        case SystemState::INITIALIZING: Serial.println("INITIALIZING"); break;
-        case SystemState::HOMING: Serial.println("HOMING"); break;
-        case SystemState::READY: Serial.println("READY"); break;
-        case SystemState::CYCLE_RUNNING: Serial.println("CYCLE RUNNING"); break;
-        case SystemState::ERROR: Serial.println("ERROR"); break;
-        default: Serial.println("UNKNOWN");
+        case SystemState::INITIALIZING: /* Serial.println("INITIALIZING"); */ break;
+        case SystemState::HOMING: /* Serial.println("HOMING"); */ break;
+        case SystemState::READY: /* Serial.println("READY"); */ break;
+        case SystemState::CYCLE_RUNNING: /* Serial.println("CYCLE RUNNING"); */ break;
+        case SystemState::ERROR: /* Serial.println("ERROR"); */ break;
+        default: /* Serial.println("UNKNOWN"); */
     }
     
     // Print position
-    Serial.print("Position: ");
-    Serial.print(stepper.currentPosition() / Motion::STEPS_PER_INCH);
-    Serial.println(" inches");
+    // Serial.print("Position: "); // DO NOT DELETE
+    // Serial.print(stepper.currentPosition() / Motion::STEPS_PER_INCH); // DO NOT DELETE
+    // Serial.println(" inches"); // DO NOT DELETE
     
     // Print input states
-    Serial.print("Home Switch: ");
-    Serial.println(homeSwitch.read() ? "TRIGGERED" : "NOT TRIGGERED");
-    Serial.print("Start Button: ");
-    Serial.println(startButton.read() ? "PRESSED" : "NOT PRESSED");
-    Serial.print("Remote Start: ");
-    Serial.println(remoteStart.read() ? "TRIGGERED" : "NOT TRIGGERED");
-    Serial.print("Alarm: ");
-    Serial.println(digitalRead(Pins::ALARM) ? "ACTIVE" : "INACTIVE");
+    // Serial.print("Home Switch: "); // DO NOT DELETE
+    // Serial.println(homeSwitch.read() ? "TRIGGERED" : "NOT TRIGGERED"); // DO NOT DELETE
+    // Serial.print("Start Button: "); // DO NOT DELETE
+    // Serial.println(startButton.read() ? "PRESSED" : "NOT PRESSED"); // DO NOT DELETE
+    // Serial.print("Remote Start: "); // DO NOT DELETE
+    // Serial.println(remoteStart.read() ? "TRIGGERED" : "NOT TRIGGERED"); // DO NOT DELETE
+    // Serial.print("Alarm: "); // DO NOT DELETE
+    // Serial.println(digitalRead(Pins::ALARM) ? "ACTIVE" : "INACTIVE"); // DO NOT DELETE
     
     // Print output states
-    Serial.print("Left Clamp: ");
-    Serial.println(digitalRead(Pins::LEFT_CLAMP) ? "RELEASED" : "ENGAGED");
-    Serial.print("Right Clamp: ");
-    Serial.println(digitalRead(Pins::RIGHT_CLAMP) ? "RELEASED" : "ENGAGED");
-    Serial.print("Alignment Cylinder: ");
-    Serial.println(digitalRead(Pins::ALIGN_CYLINDER) ? "EXTENDED" : "RETRACTED");
+    // Serial.print("Left Clamp: "); // DO NOT DELETE
+    // Serial.println(digitalRead(Pins::LEFT_CLAMP) ? "RELEASED" : "ENGAGED"); // DO NOT DELETE
+    // Serial.print("Right Clamp: "); // DO NOT DELETE
+    // Serial.println(digitalRead(Pins::RIGHT_CLAMP) ? "RELEASED" : "ENGAGED"); // DO NOT DELETE
+    // Serial.print("Alignment Cylinder: "); // DO NOT DELETE
+    // Serial.println(digitalRead(Pins::ALIGN_CYLINDER) ? "EXTENDED" : "RETRACTED"); // DO NOT DELETE
 }
 
 void printCurrentSettings() {
