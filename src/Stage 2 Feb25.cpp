@@ -143,8 +143,8 @@ namespace Motion {
     constexpr float RETURN_SPEED = 20000;
     
     // Acceleration Settings (steps/second^2)
-    constexpr float FORWARD_ACCEL = 30000;
-    constexpr float RETURN_ACCEL = 30000;
+    constexpr float FORWARD_ACCEL = 15000;
+    constexpr float RETURN_ACCEL = 15000;
 }
 
 // Timing Settings (milliseconds)
@@ -388,79 +388,59 @@ void runCuttingCycle() {
     // Return phase - first try with fast return speed
     // Serial.println("🏠 Return to home phase..."); // DO NOT DELETE
     
-    // Check if home switch is already triggered (which would be unexpected)
+    // First attempt: Use fast return speed
+    // Serial.println("Fast return to home..."); // DO NOT DELETE
+    stepper.setMaxSpeed(Motion::RETURN_SPEED);
+    stepper.setAcceleration(Motion::RETURN_ACCEL);
+    stepper.moveTo(0); // Move to position 0
+    
+    // Run the stepper until it's close to home or has stopped moving
+    unsigned long fastReturnStartTime = millis();
+    unsigned long fastReturnTimeout = 15000; // 15 seconds timeout for fast return
+    
+    while (stepper.distanceToGo() != 0) {
+        stepper.run();
+        
+        // Check for timeout or if motor is stuck
+        if (millis() - fastReturnStartTime > fastReturnTimeout) {
+            // Serial.println("⚠️ Fast return timeout - switching to slow homing..."); // DO NOT DELETE
+            break;
+        }
+    }
+    
+    // If we didn't reach home with fast return, use slow homing
     homeSwitch.update();
-    float currentPosInches = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
-    if (homeSwitch.read() == HIGH && currentPosInches >= 0 && currentPosInches <= 5.0) {
-        // Serial.println("⚠️ Home sensor already triggered - belt may have slipped!"); // DO NOT DELETE
-        // We're already at home, set position to 0
-        stepper.setCurrentPosition(0);
-    } else {
-        // First attempt: Use fast return speed
-        // Serial.println("Fast return to home..."); // DO NOT DELETE
-        stepper.setMaxSpeed(Motion::RETURN_SPEED);
+    if (homeSwitch.read() == LOW) {
+        // Serial.println("Home not reached with fast return - switching to slow homing..."); // DO NOT DELETE
+        
+        // Configure for slow homing motion
+        stepper.setMaxSpeed(Motion::HOMING_SPEED);
         stepper.setAcceleration(Motion::RETURN_ACCEL);
-        stepper.moveTo(0); // Move to position 0
+        stepper.setSpeed(-Motion::HOMING_SPEED);  // Negative for homing direction
         
-        // Run the stepper until it's close to home or has stopped moving
-        unsigned long fastReturnStartTime = millis();
-        unsigned long fastReturnTimeout = 15000; // 15 seconds timeout for fast return
+        // Move towards home switch
+        // Serial.println("Seeking home switch with slow speed..."); // DO NOT DELETE
+        unsigned long homingStartTime = millis();
+        unsigned long homingTimeout = 30000; // 30 seconds timeout
         
-        while (stepper.distanceToGo() != 0) {
-            stepper.run();
-            
-            // Check home switch when we're within reasonable distance of where we expect home to be
-            currentPosInches = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
-            if (currentPosInches >= 0 && currentPosInches <= 5.0) {
-                homeSwitch.update();
-                if (homeSwitch.read() == HIGH) {
-                    stepper.setCurrentPosition(0);
-                    // Serial.println("Home reached with fast return!"); // DO NOT DELETE
-                    break;
-                }
-            }
-            
-            // Check for timeout or if motor is stuck
-            if (millis() - fastReturnStartTime > fastReturnTimeout) {
-                // Serial.println("⚠️ Fast return timeout - switching to slow homing..."); // DO NOT DELETE
+        while (true) {
+            homeSwitch.update();
+            if (homeSwitch.read() == HIGH) {  // In slow homing, accept any home trigger
+                stepper.setCurrentPosition(0);
+                // Serial.println("Home reached with slow homing!"); // DO NOT DELETE
                 break;
             }
-        }
-        
-        // If we didn't reach home with fast return, use slow homing
-        homeSwitch.update();
-        if (homeSwitch.read() == LOW) {
-            // Serial.println("Home not reached with fast return - switching to slow homing..."); // DO NOT DELETE
             
-            // Configure for slow homing motion
-            stepper.setMaxSpeed(Motion::HOMING_SPEED);
-            stepper.setAcceleration(Motion::RETURN_ACCEL);
-            stepper.setSpeed(-Motion::HOMING_SPEED);  // Negative for homing direction
-            
-            // Move towards home switch
-            // Serial.println("Seeking home switch with slow speed..."); // DO NOT DELETE
-            unsigned long homingStartTime = millis();
-            unsigned long homingTimeout = 30000; // 30 seconds timeout
-            
-            while (true) {
-                homeSwitch.update();
-                if (homeSwitch.read() == HIGH) {  // In slow homing, accept any home trigger
-                    stepper.setCurrentPosition(0);
-                    // Serial.println("Home reached with slow homing!"); // DO NOT DELETE
-                    break;
-                }
-                
-                // Check for timeout
-                if (millis() - homingStartTime > homingTimeout) {
-                    // Serial.println("⚠️ Homing timeout - could not find home switch!"); // DO NOT DELETE
-                    // Emergency stop
-                    stepper.stop();
-                    currentState = SystemState::ERROR;
-                    return;
-                }
-                
-                stepper.runSpeed();
+            // Check for timeout
+            if (millis() - homingStartTime > homingTimeout) {
+                // Serial.println("⚠️ Homing timeout - could not find home switch!"); // DO NOT DELETE
+                // Emergency stop
+                stepper.stop();
+                currentState = SystemState::ERROR;
+                return;
             }
+            
+            stepper.runSpeed();
         }
     }
     
@@ -478,46 +458,8 @@ void moveStepperToPosition(float position, float speed, float acceleration) {
     stepper.setAcceleration(acceleration);
     stepper.moveTo(position * Motion::STEPS_PER_INCH);
     
-    // Define the home check zone (within 5 inches of home)
-    const float HOME_CHECK_ZONE = 5.0; // 5 inches from home
-    bool isMovingTowardsHome = stepper.targetPosition() < stepper.currentPosition(); // Moving towards home (decreasing position)
-    
     while (stepper.distanceToGo() != 0) {
         stepper.run();
-        
-        // Only check for home switch when moving towards home and within the home check zone
-        if (isMovingTowardsHome) {
-            // Calculate current position in inches
-            float currentPosInches = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
-            
-            // Check if we're within the home check zone (5 inches from home)
-            if (currentPosInches <= HOME_CHECK_ZONE) {
-                homeSwitch.update();
-                
-                // If home switch is triggered unexpectedly early
-                if (homeSwitch.read() == HIGH) {
-                    // Serial.println("⚠️ Home sensor triggered earlier than expected!"); // DO NOT DELETE
-                    // Serial.println("Setting current position as new home (0)"); // DO NOT DELETE
-                    
-                    // Stop the motor
-                    stepper.stop();
-                    
-                    // Set this position as the new home
-                    stepper.setCurrentPosition(0);
-                    
-                    // If we were moving to home offset, adjust the target
-                    if (position <= Motion::HOME_OFFSET * 1.5) {
-                        // Move to home offset from current position
-                        stepper.setMaxSpeed(Motion::APPROACH_SPEED);
-                        stepper.moveTo(Motion::HOME_OFFSET * Motion::STEPS_PER_INCH);
-                    } else {
-                        // We've reached home unexpectedly during another movement
-                        // Just stop here
-                        return;
-                    }
-                }
-            }
-        }
     }
 }
 
