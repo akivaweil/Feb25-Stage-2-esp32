@@ -143,8 +143,8 @@ namespace Motion {
     constexpr float RETURN_SPEED = 20000;
     
     // Acceleration Settings (steps/second^2)
-    constexpr float FORWARD_ACCEL = 15000;
-    constexpr float RETURN_ACCEL = 15000;
+    constexpr float FORWARD_ACCEL = 20000;
+    constexpr float RETURN_ACCEL = 20000;
 }
 
 // Timing Settings (milliseconds)
@@ -275,32 +275,23 @@ void performHomingSequence() {
     stepper.setAcceleration(Motion::FORWARD_ACCEL);
     stepper.moveTo(-10000); // Move 10,000 steps in negative direction
     
+    // Use a much slower approach speed for final homing
+    float slowHomingSpeed = Motion::HOMING_SPEED / 3;  // One-third of normal homing speed
+    
     // Run until we hit the home switch or reach the target
     while (stepper.distanceToGo() != 0) {
         homeSwitch.update();
         
-        // Calculate current speed
-        float currentSpeed = abs(stepper.speed());
-        
-        // If we're moving too fast and close to home switch, slow down
-        if (currentSpeed > Motion::HOMING_SPEED / 2) {  // If moving faster than half homing speed
-            // Calculate distance to potential home switch (assuming it's at position 0)
-            float distanceToHome = abs(stepper.currentPosition());
-            
-            // If we're within 1000 steps of home, start slowing down
-            if (distanceToHome < 1000) {
-                // Gradually reduce speed as we get closer
-                float newSpeed = map(distanceToHome, 1000, 0, Motion::HOMING_SPEED, Motion::HOMING_SPEED / 4);
-                stepper.setMaxSpeed(newSpeed);
-            }
+        // If we're within 2000 steps of where we think home might be, slow down significantly
+        if (abs(stepper.currentPosition()) < 2000) {
+            stepper.setMaxSpeed(slowHomingSpeed);
         }
         
         if (homeSwitch.read() == HIGH) {
-            // When home switch is triggered, gradually stop
-            stepper.setMaxSpeed(Motion::HOMING_SPEED / 8);  // Very slow final speed
-            stepper.run();
-            delay(50);  // Small delay to ensure smooth stop
+            // When home switch is triggered, stop immediately
+            stepper.setSpeed(0);
             stepper.stop();
+            delay(100);  // Longer delay to ensure complete stop
             stepper.setCurrentPosition(0);
             break;
         }
@@ -314,8 +305,13 @@ void performHomingSequence() {
         return;
     }
     
-    // Now move to home offset with controlled motion
-    moveStepperToPosition(Motion::HOME_OFFSET, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
+    // Add a longer settle time after hitting home
+    delay(Timing::HOME_SETTLE_TIME * 3);
+    
+    // Now move to home offset with a gentler motion
+    stepper.setMaxSpeed(Motion::HOMING_SPEED / 2);  // Half speed for moving to offset
+    stepper.setAcceleration(Motion::FORWARD_ACCEL / 2);  // Gentler acceleration
+    moveStepperToPosition(Motion::HOME_OFFSET, Motion::HOMING_SPEED / 2, Motion::FORWARD_ACCEL / 2);
     
     // Now that we're at home position, release the clamps
     digitalWrite(Pins::LEFT_CLAMP, HIGH);
@@ -392,7 +388,9 @@ void runCuttingCycle() {
     // Serial.println("Fast return to home..."); // DO NOT DELETE
     stepper.setMaxSpeed(Motion::RETURN_SPEED);
     stepper.setAcceleration(Motion::RETURN_ACCEL);
-    stepper.moveTo(0); // Move to position 0
+    
+    // Move to position 0.1 instead of 0 to create a gentler approach to the home sensor
+    stepper.moveTo(0.1 * Motion::STEPS_PER_INCH); // Move to position 0.1 inches
     
     // Run the stepper until it's close to home or has stopped moving
     unsigned long fastReturnStartTime = millis();
