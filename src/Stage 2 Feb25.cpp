@@ -2,114 +2,6 @@
 #include <AccelStepper.h>
 #include <Bounce2.h>
 
-// ? ===============================================================================
-// ? 🔄 CUTTING CYCLE SEQUENCE
-// ? ===============================================================================
-/*
-* UPDATE THE INSTRUCTIONS BELOW AS YOU CHANGE THE CODE. IF THE CODE AND INSTRUCTIONS ARE DIFFERENT THEN PRIORITIZE THE INSTRUCTIONS.
-*
- * 1. 🏁 Initial Position:
- *    - 🔵 Both clamps engaged (LOW) at startup
- *    - 🔴 Alignment cylinder retracted (LOW)
- *    - 🎯 Motor at home offset (1.65 inches)
- * 
- * 2. 🏠 Homing Sequence:
- *    - 🔵 Clamps remain engaged during homing
- *    - 🎯 Motor moves until the home switch is triggered, then moves to the home offset (1.65 inches)
- *    - 🔴 Release clamps (HIGH) after reaching the home offset
- * 
- * 3. 🚀 Cycle Start:
- *    - 🔵 Extend alignment cylinder (HIGH)
- *    - ⏱️ Wait 500ms for alignment
- *
- * 3a. Left Clamp Pulse:
- *    - 👍 Left clamp extends (engages, LOW) for 300ms then retracts (HIGH) for 200ms
- * 
- * 4. 🔒 Clamping Sequence:
- *    - 🔵 Engage right clamp (LOW)
- *    - ⏱️ Wait 300ms
- *    - 🔴 Retract alignment cylinder (LOW)
- *    - ⏱️ Wait 200ms
- *    - 🔵 Engage left clamp (LOW)
- *    - ⏱️ Wait 300ms for clamps to fully engage
- * 
- * 5. 🔄 Cutting Sequence:
- *    - 🚀 Rapid approach for the first 6 inches (5000 steps/sec)
- *    - 🐌 Slow cutting phase for the next 8 inches (133 steps/sec)
- *    - 🏃 Accelerate to finish speed (5000 steps/sec) for the remaining distance
- *    - 🎯 Stop at forward position (25 inches)
- * 
- * 6. 📦 Release Sequence:
- *    - ⏱️ Wait for motion to complete
- *    - 🔴 Disengage clamps (HIGH)
- *    - ⏱️ Wait 500ms for clamps to release
- * 
- * 7. 🏠 Return Sequence:
- *    - 🎯 Return to home offset (1.65 inches) using return speed (10000 steps/sec)
- *    - ⏱️ Wait for motion completion
- */
-
-/*
- * AUTOMATED TABLE SAW CONTROL SYSTEM
- * 
- * SAFETY NOTICE: PLEASE DO NOT DELETE OR MODIFY ANYTHING HERE
- * This code controls an automated table saw cutting system. Safety is the absolute priority.
- * - Code clarity and reliability take precedence over processing efficiency
- * - All functions are written to be as explicit and straightforward as possible
- * - Hardware emergency stop switch cuts ALL power to the system when activated
- * - Multiple software safety checks are implemented throughout the cycle
- * - All switches and buttons read HIGH when activated
- * - All cylinders require a LOW output to engage (Updated Feb 2024)
- * - Bounce2 library is used for switch debouncing with a 20ms debounce time
- * - All code should be very very easy to understand for a beginner programmer
- * - Switches are configured where one side is connected to 5v and the other side 
- *   splits into 10k resistor to ground at its signal pin
- */
-
-/*
- * ⚠️ SAFETY FEATURES:
- * 
- * 1. 🛑 Emergency Stop:
- *    - Hardware E-stop cuts all power immediately
- *    - No software override possible
- * 
- * 2. 🔒 Motion Safety:
- *    - Clamps must engage before any motion
- *    - Homing required before operation
- *    - Controlled acceleration and deceleration
- *    - Speed limits enforced in software
- * 
- * 3. ⚡ Electrical Safety:
- *    - All inputs debounced to prevent false triggers
- *    - Pullup resistors on all inputs
- *    - Fail-safe signal logic
- * 
- * 4. 🔍 System Monitoring:
- *    - Continuous position tracking
- *    - Motor alarm detection
- *    - Serial debugging output
- * 
- * 5. 🛡️ Operational Safety:
- *    - Clear state indicators
- *    - Predictable motion sequences
- *    - No unexpected movements
- *    - Required settling times between actions
- */
-
-/*
- * AUTOMATED TABLE SAW CONTROL SYSTEM
- * 
- * SAFETY NOTICE: PLEASE DO NOT DELETE OR MODIFY ANYTHING HERE
- * 
- * IMPORTANT: All Serial.print() and Serial.println() statements have been commented out
- * for performance reasons. DO NOT DELETE these statements as they provide valuable
- * debugging information. Documentation and code comments should still be maintained.
- */
-
-// ! ===============================================================================
-// ! 🛑 SAFETY NOTICE: DO NOT MODIFY WITHOUT APPROVAL
-// ! ===============================================================================
-
 // Pin Configuration - Using ESP32 GPIO pins
 namespace Pins {
     // Input pins
@@ -129,22 +21,22 @@ namespace Pins {
 
 // Motion Parameters
 namespace Motion {
-    constexpr int STEPS_PER_INCH = 84;
-    constexpr float HOME_OFFSET = 0.2;
-    constexpr float APPROACH_DISTANCE = 5.0;
-    constexpr float CUTTING_DISTANCE = 7.2;
-    constexpr float FORWARD_DISTANCE = 28.0;
+    constexpr int STEPS_PER_INCH = 126;  // 84 * 1.5 for the 30:20 tooth ratio
+    constexpr float HOME_OFFSET = 0.2;   // Position value stays the same
+    constexpr float APPROACH_DISTANCE = 5.0;  // Position value stays the same
+    constexpr float CUTTING_DISTANCE = 7.2;   // Position value stays the same
+    constexpr float FORWARD_DISTANCE = 28.0;  // Position value stays the same
     
-    // Speed Settings (steps/second)
-    constexpr float HOMING_SPEED = 1000;
-    constexpr float APPROACH_SPEED = 20000;
-    constexpr float CUTTING_SPEED = 200;
-    constexpr float FINISH_SPEED = 20000;
-    constexpr float RETURN_SPEED = 20000;
+    // Speed Settings (steps/second) - All multiplied by 1.5
+    constexpr float HOMING_SPEED = 1500;      // 1000 * 1.5
+    constexpr float APPROACH_SPEED = 30000;   // 20000 * 1.5
+    constexpr float CUTTING_SPEED = 300;      // 200 * 1.5
+    constexpr float FINISH_SPEED = 30000;     // 20000 * 1.5
+    constexpr float RETURN_SPEED = 30000;     // 20000 * 1.5
     
-    // Acceleration Settings (steps/second^2)
-    constexpr float FORWARD_ACCEL = 20000;
-    constexpr float RETURN_ACCEL = 20000;
+    // Acceleration Settings (steps/second^2) - All multiplied by 1.5
+    constexpr float FORWARD_ACCEL = 30000;    // 20000 * 1.5
+    constexpr float RETURN_ACCEL = 30000;     // 20000 * 1.5
 }
 
 // Timing Settings (milliseconds)
@@ -246,7 +138,7 @@ void initializeHardware() {
     
     // Setup debouncing
     homeSwitch.attach(Pins::HOME_SWITCH);
-    homeSwitch.interval(20);
+    homeSwitch.interval(5);
     startButton.attach(Pins::START_BUTTON);
     startButton.interval(20);
     remoteStart.attach(Pins::REMOTE_START);
@@ -384,14 +276,27 @@ void runCuttingCycle() {
     // Return phase - first try with fast return speed
     // Serial.println("🏠 Return to home phase..."); // DO NOT DELETE
     
-    // First attempt: Use fast return speed
+    // First attempt: Use fast return speed with normal acceleration
     // Serial.println("Fast return to home..."); // DO NOT DELETE
     stepper.setMaxSpeed(Motion::RETURN_SPEED);
-    stepper.setAcceleration(Motion::RETURN_ACCEL);
-    
+    stepper.setAcceleration(Motion::RETURN_ACCEL); // Normal acceleration for quick start
+
+    // Run until we're about halfway back to home
+    float currentPosition = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
+    float halfwayPosition = currentPosition / 2; // Halfway between current and home
+    stepper.moveTo(halfwayPosition * Motion::STEPS_PER_INCH);
+
+    while (stepper.distanceToGo() != 0) {
+        stepper.run();
+    }
+
+    // Now switch to gentler deceleration for the final approach
+    // Serial.println("Switching to gentle deceleration for final approach..."); // DO NOT DELETE
+    stepper.setAcceleration(Motion::RETURN_ACCEL / 4); // Reduce to 1/4 for gentler deceleration
+
     // Move to position 0.1 instead of 0 to create a gentler approach to the home sensor
     stepper.moveTo(0.1 * Motion::STEPS_PER_INCH); // Move to position 0.1 inches
-    
+
     // Run the stepper until it's close to home or has stopped moving
     unsigned long fastReturnStartTime = millis();
     unsigned long fastReturnTimeout = 15000; // 15 seconds timeout for fast return
@@ -568,4 +473,3 @@ void printCurrentSettings() {
     // Serial.print("- Motion settle time: "); Serial.println(Timing::MOTION_SETTLE_TIME); // DO NOT DELETE
     // Serial.println(); // DO NOT DELETE
 }
-
