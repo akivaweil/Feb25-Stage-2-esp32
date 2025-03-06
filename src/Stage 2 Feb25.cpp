@@ -22,7 +22,7 @@ namespace Pins {
 // Motion Parameters
 namespace Motion {
     constexpr int STEPS_PER_INCH = 126;  // 84 * 1.5 for the 30:20 tooth ratio
-    constexpr float HOME_OFFSET = 0.2;   // Position value stays the same
+    constexpr float HOME_OFFSET = 0.1;   // Position value stays the same
     constexpr float APPROACH_DISTANCE = 5.0;  // Position value stays the same
     constexpr float CUTTING_DISTANCE = 7.2;   // Position value stays the same
     constexpr float FORWARD_DISTANCE = 28.0;  // Position value stays the same
@@ -35,19 +35,20 @@ namespace Motion {
     constexpr float RETURN_SPEED = 30000;     // 20000 * 1.5
     
     // Acceleration Settings (steps/second^2) - All multiplied by 1.5
-    constexpr float FORWARD_ACCEL = 30000;    // 20000 * 1.5
-    constexpr float RETURN_ACCEL = 30000;     // 20000 * 1.5
+    constexpr float FORWARD_ACCEL = 30000;    // Increased from 20000
+    constexpr float RETURN_ACCEL = 30000;     // Increased from 20000
 }
 
 // Timing Settings (milliseconds)
 namespace Timing {
-    constexpr int CLAMP_ENGAGE_TIME = 300;
-    constexpr int CLAMP_RELEASE_TIME = 300;
-    constexpr int HOME_SETTLE_TIME = 50;
-    constexpr int MOTION_SETTLE_TIME = 100;
-    constexpr int ALIGNMENT_TIME = 150;
-    constexpr int LEFT_CLAMP_RETRACT_WAIT = 100;
-    constexpr int CLAMP_RELEASE_SETTLE_TIME = 200;
+    constexpr int CLAMP_ENGAGE_TIME = 200;
+    constexpr int CLAMP_RELEASE_TIME = 200;
+    constexpr int HOME_SETTLE_TIME = 30;
+    constexpr int MOTION_SETTLE_TIME = 50;
+    constexpr int ALIGNMENT_TIME = 300;       // Changed to 300ms for alignment cylinder
+    constexpr int LEFT_CLAMP_PULSE_TIME = 100; // New constant for left clamp pulse duration
+    constexpr int LEFT_CLAMP_RETRACT_WAIT = 50;
+    constexpr int CLAMP_RELEASE_SETTLE_TIME = 100;
 }
 
 // System state
@@ -138,7 +139,7 @@ void initializeHardware() {
     
     // Setup debouncing
     homeSwitch.attach(Pins::HOME_SWITCH);
-    homeSwitch.interval(5);
+    homeSwitch.interval(25);  // Changed from 5ms to 25ms for better debouncing
     startButton.attach(Pins::START_BUTTON);
     startButton.interval(20);
     remoteStart.attach(Pins::REMOTE_START);
@@ -183,7 +184,6 @@ void performHomingSequence() {
             // When home switch is triggered, stop immediately
             stepper.setSpeed(0);
             stepper.stop();
-            delay(100);  // Longer delay to ensure complete stop
             stepper.setCurrentPosition(0);
             break;
         }
@@ -197,10 +197,7 @@ void performHomingSequence() {
         return;
     }
     
-    // Add a longer settle time after hitting home
-    delay(Timing::HOME_SETTLE_TIME * 3);
-    
-    // Now move to home offset with a gentler motion
+    // Now move to home offset with a gentler motion - no delay
     stepper.setMaxSpeed(Motion::HOMING_SPEED / 2);  // Half speed for moving to offset
     stepper.setAcceleration(Motion::FORWARD_ACCEL / 2);  // Gentler acceleration
     moveStepperToPosition(Motion::HOME_OFFSET, Motion::HOMING_SPEED / 2, Motion::FORWARD_ACCEL / 2);
@@ -217,9 +214,15 @@ void runCuttingCycle() {
     // Initial left clamp pulse and alignment cylinder extension
     digitalWrite(Pins::LEFT_CLAMP, LOW);      // Engage (extend) left clamp
     digitalWrite(Pins::ALIGN_CYLINDER, HIGH); // Extend alignment cylinder
-    delay(Timing::ALIGNMENT_TIME);                            
+    
+    // Left clamp only extends for 100ms
+    delay(Timing::LEFT_CLAMP_PULSE_TIME);
     digitalWrite(Pins::LEFT_CLAMP, HIGH);     // Retract left clamp
-    delay(Timing::LEFT_CLAMP_RETRACT_WAIT);                            
+    
+    // Alignment cylinder stays extended for the remainder of the time
+    delay(Timing::ALIGNMENT_TIME - Timing::LEFT_CLAMP_PULSE_TIME);
+    
+    delay(Timing::LEFT_CLAMP_RETRACT_WAIT);
     digitalWrite(Pins::ALIGN_CYLINDER, LOW);  // Retract alignment cylinder
 
     // Engage clamps
@@ -243,7 +246,7 @@ void runCuttingCycle() {
     
     // Ensure motor has completely stopped
     stepper.stop();
-    delay(Timing::MOTION_SETTLE_TIME * 2);  // Double the settle time
+    delay(Timing::MOTION_SETTLE_TIME);  // Changed from MOTION_SETTLE_TIME * 2
     
     // Verify position before releasing clamps
     float finalPosition = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
@@ -273,64 +276,107 @@ void runCuttingCycle() {
         delay(Timing::MOTION_SETTLE_TIME);
     }
     
-    // Return phase - first try with fast return speed
+    // Return phase with improved homing detection
     // Serial.println("🏠 Return to home phase..."); // DO NOT DELETE
     
-    // First attempt: Use fast return speed with normal acceleration
-    // Serial.println("Fast return to home..."); // DO NOT DELETE
-    stepper.setMaxSpeed(Motion::RETURN_SPEED);
-    stepper.setAcceleration(Motion::RETURN_ACCEL); // Normal acceleration for quick start
-
-    // Run until we're about halfway back to home
+    // First calculate current position and determine a slow-down point
     float currentPosition = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
-    float halfwayPosition = currentPosition / 2; // Halfway between current and home
-    stepper.moveTo(halfwayPosition * Motion::STEPS_PER_INCH);
-
-    while (stepper.distanceToGo() != 0) {
-        stepper.run();
-    }
-
-    // Now switch to gentler deceleration for the final approach
-    // Serial.println("Switching to gentle deceleration for final approach..."); // DO NOT DELETE
-    stepper.setAcceleration(Motion::RETURN_ACCEL / 4); // Reduce to 1/4 for gentler deceleration
-
-    // Move to position 0.1 instead of 0 to create a gentler approach to the home sensor
-    stepper.moveTo(0.1 * Motion::STEPS_PER_INCH); // Move to position 0.1 inches
-
-    // Run the stepper until it's close to home or has stopped moving
+    float slowDownPosition = currentPosition * 0.01; // Slow down at 1% of the way back (99% of the way there)
+    
+    // If we're very far out, use fast speed initially
+    // Serial.println("Starting return movement..."); // DO NOT DELETE
+    stepper.setMaxSpeed(Motion::RETURN_SPEED);
+    stepper.setAcceleration(Motion::RETURN_ACCEL);
+    stepper.moveTo(slowDownPosition * Motion::STEPS_PER_INCH);
+    
+    // Run at fast speed until we reach the slow-down point or detect home sensor
     unsigned long fastReturnStartTime = millis();
-    unsigned long fastReturnTimeout = 15000; // 15 seconds timeout for fast return
+    unsigned long fastReturnTimeout = 15000; // 15 seconds timeout
     
     while (stepper.distanceToGo() != 0) {
+        homeSwitch.update();
+        
+        // Calculate current distance from expected home position in inches
+        float distanceFromHome = abs(stepper.currentPosition()) / (float)Motion::STEPS_PER_INCH;
+        
+        // If we detect the home switch during fast return, but only if we're within 5 inches of expected home
+        if (homeSwitch.read() == HIGH && distanceFromHome <= 5.0) {
+            stepper.setSpeed(0);
+            stepper.stop();
+            stepper.setCurrentPosition(0);
+            // Serial.println("Home sensor detected during fast return!"); // DO NOT DELETE
+            break;
+        }
+        
         stepper.run();
         
-        // Check for timeout or if motor is stuck
+        // Check for timeout
         if (millis() - fastReturnStartTime > fastReturnTimeout) {
             // Serial.println("⚠️ Fast return timeout - switching to slow homing..."); // DO NOT DELETE
             break;
         }
     }
     
-    // If we didn't reach home with fast return, use slow homing
+    // If we haven't reached home yet, proceed with slow approach
     homeSwitch.update();
     if (homeSwitch.read() == LOW) {
-        // Serial.println("Home not reached with fast return - switching to slow homing..."); // DO NOT DELETE
+        // Serial.println("Switching to slow approach for final homing..."); // DO NOT DELETE
         
-        // Configure for slow homing motion
-        stepper.setMaxSpeed(Motion::HOMING_SPEED);
-        stepper.setAcceleration(Motion::RETURN_ACCEL);
-        stepper.setSpeed(-Motion::HOMING_SPEED);  // Negative for homing direction
+        // Use significantly reduced speed for gentle approach to home
+        float slowHomingSpeed = Motion::HOMING_SPEED / 2;  // Half of homing speed
+        stepper.setMaxSpeed(slowHomingSpeed);
+        stepper.setAcceleration(Motion::RETURN_ACCEL / 4);  // Gentler acceleration
+        stepper.moveTo(0);  // Move toward expected home position
+        
+        // Run and continuously check for home sensor
+        unsigned long slowApproachStartTime = millis();
+        unsigned long slowApproachTimeout = 20000; // 20 seconds timeout
+        
+        while (stepper.distanceToGo() != 0) {
+            homeSwitch.update();
+            
+            // Calculate current distance from expected home position in inches
+            float distanceFromHome = abs(stepper.currentPosition()) / (float)Motion::STEPS_PER_INCH;
+            
+            // If we detect the home switch, but only if we're within 5 inches of expected home
+            if (homeSwitch.read() == HIGH && distanceFromHome <= 5.0) {
+                stepper.setSpeed(0);
+                stepper.stop();
+                stepper.setCurrentPosition(0);
+                // Serial.println("Home sensor detected during slow approach!"); // DO NOT DELETE
+                break;
+            }
+            
+            stepper.run();
+            
+            // Check for timeout
+            if (millis() - slowApproachStartTime > slowApproachTimeout) {
+                // Serial.println("⚠️ Slow approach timeout - switching to fallback homing..."); // DO NOT DELETE
+                break;
+            }
+        }
+    }
+    
+    // If we still haven't found home, use the fallback slow homing method
+    homeSwitch.update();
+    if (homeSwitch.read() == LOW) {
+        // Serial.println("Home not reached - switching to fallback homing..."); // DO NOT DELETE
+        
+        // Configure for extremely slow homing motion
+        stepper.setMaxSpeed(Motion::HOMING_SPEED / 3); // Very slow speed
+        stepper.setAcceleration(Motion::RETURN_ACCEL / 8); // Very gentle acceleration
+        stepper.setSpeed(-(Motion::HOMING_SPEED / 3));  // Negative for homing direction
         
         // Move towards home switch
-        // Serial.println("Seeking home switch with slow speed..."); // DO NOT DELETE
+        // Serial.println("Seeking home switch with fallback method..."); // DO NOT DELETE
         unsigned long homingStartTime = millis();
         unsigned long homingTimeout = 30000; // 30 seconds timeout
         
         while (true) {
             homeSwitch.update();
-            if (homeSwitch.read() == HIGH) {  // In slow homing, accept any home trigger
+            if (homeSwitch.read() == HIGH) {  // In fallback homing, accept any home trigger
                 stepper.setCurrentPosition(0);
-                // Serial.println("Home reached with slow homing!"); // DO NOT DELETE
+                // Serial.println("Home reached with fallback homing!"); // DO NOT DELETE
                 break;
             }
             
