@@ -1,54 +1,53 @@
 #include <Arduino.h>
-#include <FastAccelStepper.h>
+#include <AccelStepper.h>
 #include <Bounce2.h>
 
 // Pin Configuration - Using ESP32 GPIO pins
 namespace Pins {
     // Input pins
-    constexpr int HOME_SWITCH = 22;
-    constexpr int START_BUTTON = 23;
-    constexpr int MACHINE_1TO2_START_SIGNAL = 15;  // Changed from 18 to 5 for Stage 1 signal
+    constexpr int HOME_SWITCH = 15;
+    constexpr int START_BUTTON = 2;
+    constexpr int MACHINE_1TO2_START_SIGNAL = 18;  // Changed from 18 to 5 for Stage 1 signal
     constexpr int ALARM = 26;
     
     // Output pins
-    constexpr int STEP = 18;
-    constexpr int DIR = 5;
+    constexpr int STEP = 12;
+    constexpr int DIR = 14;
     constexpr int ENABLE = 27;
-    constexpr int LEFT_CLAMP = 13;
-    constexpr int RIGHT_CLAMP = 14;
-    constexpr int ALIGN_CYLINDER = 12;
-    constexpr int ROUTER_SIGNAL = 4;
+    constexpr int LEFT_CLAMP = 22;
+    constexpr int RIGHT_CLAMP = 23;
+    constexpr int ALIGN_CYLINDER = 21;
+    constexpr int ROUTER_SIGNAL = 19;
 }
 
 // Motion Parameters
 namespace Motion {
-    constexpr int STEPS_PER_INCH = 31.75;   // 200 steps/rev ÷ 6.30 inches/rev (80 tooth 2GT pulley)
-    constexpr float HOME_OFFSET = .8;   // Increased from 0.5
-    constexpr float APPROACH_DISTANCE = 7.0;  // Increased from 1.0
-    constexpr float CUTTING_DISTANCE = 14.5;   // Increased from 15.0
-    constexpr float FORWARD_DISTANCE = 51.0;  // Increased from 25.0
+    constexpr int STEPS_PER_INCH = 32;   // Halved from 63 for the 30:80 tooth ratio
+    constexpr float HOME_OFFSET = 0.6;   // Position value stays the same
+    constexpr float APPROACH_DISTANCE = 5.0;  // Position value stays the same
+    constexpr float CUTTING_DISTANCE = 7.3;   // Position value stays the same
+    constexpr float FORWARD_DISTANCE = 30;  // Position value stays the same
     
-    // Speed Settings (steps/second) - All halved
-    constexpr float HOMING_SPEED = 750;      // 1500 / 2
-    constexpr float APPROACH_SPEED = 10000;   // 20000 / 2
-    constexpr float CUTTING_SPEED = 70;      // Adjusted for 7.5 second total cycle time
-    constexpr float FINISH_SPEED = 30000;     // 25000 / 2
-    constexpr float RETURN_SPEED = 40000;     // 25000 / 2
+    // Speed Settings (steps/second) - All halved for 80-tooth pulley
+    constexpr float HOMING_SPEED = 750;       // 1500 ÷ 2
+    constexpr float APPROACH_SPEED = 10000;   // 20000 ÷ 2
+    constexpr float CUTTING_SPEED = 63;       // 125 ÷ 2 (rounded)
+    constexpr float FINISH_SPEED = 12500;     // 25000 ÷ 2
+    constexpr float RETURN_SPEED = 12500;     // 25000 ÷ 2
     
-    // Acceleration Settings (steps/second^2) - All halved
-    constexpr float FORWARD_ACCEL = 30000;    // 15000 / 2
-    constexpr float RETURN_ACCEL = 35000;     // 15000 / 2
+    // Acceleration Settings (steps/second^2) - All halved for 80-tooth pulley
+    constexpr float FORWARD_ACCEL = 7500;     // 15000 ÷ 2
+    constexpr float RETURN_ACCEL = 7500;      // 15000 ÷ 2
 }
 
 // Timing Settings (milliseconds)
 namespace Timing {
-    constexpr int CLAMP_ENGAGE_TIME = 75;     // Updated from 200ms to 75ms for left clamp
-    constexpr int RIGHT_CLAMP_ENGAGE_TIME = 50; // Added new constant for right clamp
+    constexpr int CLAMP_ENGAGE_TIME = 200;
     constexpr int CLAMP_RELEASE_TIME = 200;
     constexpr int HOME_SETTLE_TIME = 30;
     constexpr int MOTION_SETTLE_TIME = 50;
-    constexpr int ALIGNMENT_TIME = 200;      // Changed from 300ms to 200ms
-    constexpr int LEFT_CLAMP_PULSE_TIME = 100; // Left clamp pulse duration
+    constexpr int ALIGNMENT_TIME = 300;       // Changed to 300ms for alignment cylinder
+    constexpr int LEFT_CLAMP_PULSE_TIME = 100; // New constant for left clamp pulse duration
     constexpr int LEFT_CLAMP_RETRACT_WAIT = 50;
     constexpr int CLAMP_RELEASE_SETTLE_TIME = 100;
     constexpr int ROUTER_SIGNAL_DURATION = 1000; // 1 second pulse for router signal
@@ -64,8 +63,7 @@ enum class SystemState {
 };
 
 // Global objects
-FastAccelStepperEngine engine = FastAccelStepperEngine();
-FastAccelStepper *stepper = NULL;
+AccelStepper stepper(AccelStepper::DRIVER, Pins::STEP, Pins::DIR);
 Bounce homeSwitch = Bounce();
 Bounce startButton = Bounce();
 Bounce machineStartSignal = Bounce();  // Renamed from remoteStart
@@ -166,28 +164,18 @@ void initializeHardware() {
     homeSwitch.attach(Pins::HOME_SWITCH);
     homeSwitch.interval(10);
     startButton.attach(Pins::START_BUTTON);
-    startButton.interval(50);
+    startButton.interval(20);
     machineStartSignal.attach(Pins::MACHINE_1TO2_START_SIGNAL);
-    machineStartSignal.interval(50);  // Increased from 20ms to 50ms for better debouncing
+    machineStartSignal.interval(20);  // Ensure good debouncing for the signal pin
     
-    // Initialize FastAccelStepper
-    engine.init();
-    stepper = engine.stepperConnectToPin(Pins::STEP);
-    if (stepper) {
-        stepper->setDirectionPin(Pins::DIR);
-        stepper->setEnablePin(Pins::ENABLE);
-        stepper->setAutoEnable(false); // We'll manually control enable pin
-        
-        // Initialize stepper
-        digitalWrite(Pins::ENABLE, HIGH);  // Disable briefly
-        delay(100);                       // Wait for motor to reset
-        digitalWrite(Pins::ENABLE, LOW);   // Enable
-        delay(50);                        // Wait for enable to take effect
-        
-        stepper->setSpeedInHz(Motion::APPROACH_SPEED);
-        stepper->setAcceleration(Motion::FORWARD_ACCEL);
-        stepper->setCurrentPosition(0);    // Initialize position to 0
-    }
+    // Initialize stepper
+    digitalWrite(Pins::ENABLE, HIGH);  // Disable briefly
+    delay(100);                       // Wait 1 second for motor to reset
+    digitalWrite(Pins::ENABLE, LOW);   // Enable
+    delay(50);                        // Wait for enable to take effect
+    
+    stepper.setMaxSpeed(Motion::APPROACH_SPEED);
+    stepper.setAcceleration(Motion::FORWARD_ACCEL);
     
     // Serial.println("✅ Hardware initialized"); // DO NOT DELETE
 }
@@ -198,42 +186,44 @@ void performHomingSequence() {
     
     // Clamps are already engaged from initialization
     
-    // First, move a significant distance in the positive direction to ensure we're past the home switch
-    stepper->setSpeedInHz(Motion::HOMING_SPEED);
-    stepper->setAcceleration(Motion::FORWARD_ACCEL);
-    stepper->moveTo(10000); // Move 10,000 steps in positive direction
+    // First, move a significant distance in the negative direction to ensure we're past the home switch
+    stepper.setMaxSpeed(Motion::HOMING_SPEED);
+    stepper.setAcceleration(Motion::FORWARD_ACCEL);
+    stepper.moveTo(-10000); // Move 10,000 steps in negative direction
     
     // Use a much slower approach speed for final homing
     float slowHomingSpeed = Motion::HOMING_SPEED / 3;  // One-third of normal homing speed
     
     // Run until we hit the home switch or reach the target
-    while (stepper->isRunning()) {
+    while (stepper.distanceToGo() != 0) {
         homeSwitch.update();
         
         // If we're within 2000 steps of where we think home might be, slow down significantly
-        if (abs(stepper->getCurrentPosition()) < 2000) {
-            stepper->setSpeedInHz(slowHomingSpeed);
+        if (abs(stepper.currentPosition()) < 2000) {
+            stepper.setMaxSpeed(slowHomingSpeed);
         }
         
         if (homeSwitch.read() == HIGH) {
             // When home switch is triggered, stop immediately
-            stepper->forceStop();
-            stepper->setCurrentPosition(0);
+            stepper.setSpeed(0);
+            stepper.stop();
+            stepper.setCurrentPosition(0);
             break;
         }
+        stepper.run();
     }
     
     // If we didn't hit the home switch, we have a problem
     if (homeSwitch.read() == LOW) {
-        // Serial.println("⚠️ Failed to find home switch during initial homing!"); // DO NOT DELETE
+        // Serial.println("⚠ Failed to find home switch during initial homing!"); // DO NOT DELETE
         currentState = SystemState::ERROR;
         return;
     }
     
     // Now move to home offset with a gentler motion - no delay
-    stepper->setSpeedInHz(Motion::HOMING_SPEED / 2);  // Half speed for moving to offset
-    stepper->setAcceleration(Motion::FORWARD_ACCEL / 2);  // Gentler acceleration
-    moveStepperToPosition(-Motion::HOME_OFFSET, Motion::HOMING_SPEED / 2, Motion::FORWARD_ACCEL / 2);
+    stepper.setMaxSpeed(Motion::HOMING_SPEED / 2);  // Half speed for moving to offset
+    stepper.setAcceleration(Motion::FORWARD_ACCEL / 2);  // Gentler acceleration
+    moveStepperToPosition(Motion::HOME_OFFSET, Motion::HOMING_SPEED / 2, Motion::FORWARD_ACCEL / 2);
     
     // Now that we're at home position, release the clamps
     digitalWrite(Pins::LEFT_CLAMP, HIGH);
@@ -246,62 +236,54 @@ void performHomingSequence() {
 void runCuttingCycle() {
     // Initial left clamp pulse and alignment cylinder extension
     digitalWrite(Pins::LEFT_CLAMP, LOW);      // Engage (extend) left clamp
+
     
     // Left clamp only extends for 100ms
     delay(100);
     digitalWrite(Pins::LEFT_CLAMP, HIGH);     // Retract left clamp
     digitalWrite(Pins::ALIGN_CYLINDER, HIGH); // Extend alignment cylinder
     
-    // Alignment cylinder stays extended for 200ms
-    delay(200);
+    // Alignment cylinder stays extended for the remainder of the time
+    delay(300);
     
-    // Engage right clamp before alignment cylinder retraction
-    digitalWrite(Pins::RIGHT_CLAMP, LOW);     // Engage right clamp
-    
-    // Wait additional settling time
     delay(50);
-    
-    // Retract alignment cylinder
-    digitalWrite(Pins::ALIGN_CYLINDER, LOW);  
-    
-    // Allow right clamp to fully engage
-    delay(150);  // Increased from 50ms to 150ms
-    
-    // Engage left clamp
-    digitalWrite(Pins::LEFT_CLAMP, LOW);   
-    
-    // Allow left clamp to fully engage
-    delay(75);
+    digitalWrite(Pins::ALIGN_CYLINDER, LOW);  // Retract alignment cylinder
+
+    // Engage clamps
+    digitalWrite(Pins::RIGHT_CLAMP, LOW);  // Engage right clamp
+    delay(200);
+    digitalWrite(Pins::LEFT_CLAMP, LOW);   // Engage left clamp
+    delay(200);
 
     // Approach phase
     // Serial.println("🚀 Approach phase..."); // DO NOT DELETE
-    moveStepperToPosition(-Motion::APPROACH_DISTANCE, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
+    moveStepperToPosition(Motion::APPROACH_DISTANCE, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
     
     // Cutting phase
     // Serial.println("🔪 Cutting phase..."); // DO NOT DELETE
-    moveStepperToPosition(-(Motion::APPROACH_DISTANCE + Motion::CUTTING_DISTANCE), 
+    moveStepperToPosition(Motion::APPROACH_DISTANCE + Motion::CUTTING_DISTANCE, 
                          Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL * 2);
     
     // Finish phase
     // Serial.println("🏁 Finish phase..."); // DO NOT DELETE
-    moveStepperToPosition(-Motion::FORWARD_DISTANCE, Motion::FINISH_SPEED, Motion::FORWARD_ACCEL);
+    moveStepperToPosition(Motion::FORWARD_DISTANCE, Motion::FINISH_SPEED, Motion::FORWARD_ACCEL);
     
     // Ensure motor has completely stopped
-    stepper->forceStop();
+    stepper.stop();
     delay(50);
     
     // Verify position before releasing clamps
-    float finalPosition = stepper->getCurrentPosition() / (float)Motion::STEPS_PER_INCH;
-    if (abs(finalPosition + Motion::FORWARD_DISTANCE) > 0.1) {  // If more than 0.1 inches off
-        // Serial.println("⚠️ Position error at forward position!"); // DO NOT DELETE
+    float finalPosition = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
+    if (abs(finalPosition - Motion::FORWARD_DISTANCE) > 0.1) {  // If more than 0.1 inches off
+        // Serial.println("⚠ Position error at forward position!"); // DO NOT DELETE
         // Try to correct position
-        moveStepperToPosition(-Motion::FORWARD_DISTANCE, Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
-        stepper->forceStop();
+        moveStepperToPosition(Motion::FORWARD_DISTANCE, Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
+        stepper.stop();
         delay(50);
     }
     
     // Store the position before releasing clamps
-    long positionBeforeRelease = stepper->getCurrentPosition();
+    long positionBeforeRelease = stepper.currentPosition();
     
     // Release both clamps simultaneously
     releaseClamps();
@@ -310,11 +292,11 @@ void runCuttingCycle() {
     delay(100);
     
     // Verify position hasn't changed significantly after clamp release
-    if (abs(stepper->getCurrentPosition() - positionBeforeRelease) > Motion::STEPS_PER_INCH / 4) {  // If position changed by more than 1/4 inch
-        // Serial.println("⚠️ Position shifted during clamp release!"); // DO NOT DELETE
+    if (abs(stepper.currentPosition() - positionBeforeRelease) > Motion::STEPS_PER_INCH / 4) {  // If position changed by more than 1/4 inch
+        // Serial.println("⚠ Position shifted during clamp release!"); // DO NOT DELETE
         // Try to correct position before return
-        moveStepperToPosition(-Motion::FORWARD_DISTANCE, Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
-        stepper->forceStop();
+        moveStepperToPosition(Motion::FORWARD_DISTANCE, Motion::CUTTING_SPEED, Motion::FORWARD_ACCEL);
+        stepper.stop();
         delay(50);
     }
     
@@ -323,38 +305,40 @@ void runCuttingCycle() {
     // Serial.println("🏠 Return to home phase..."); // DO NOT DELETE
     
     // First calculate current position and determine a slow-down point
-    float currentPosition = stepper->getCurrentPosition() / (float)Motion::STEPS_PER_INCH;
+    float currentPosition = stepper.currentPosition() / (float)Motion::STEPS_PER_INCH;
     float slowDownPosition = currentPosition * 0.01; // Slow down at 1% of the way back (99% of the way there)
     
     // Fast return: move quickly to the slow-down point
-    stepper->setSpeedInHz(Motion::RETURN_SPEED);
-    stepper->setAcceleration(Motion::RETURN_ACCEL);
-    stepper->moveTo(slowDownPosition * Motion::STEPS_PER_INCH);
+    stepper.setMaxSpeed(Motion::RETURN_SPEED);
+    stepper.setAcceleration(Motion::RETURN_ACCEL);
+    stepper.moveTo(slowDownPosition * Motion::STEPS_PER_INCH);
     
     unsigned long fastReturnStartTime = millis();
     unsigned long fastReturnTimeout = 15000; // 15 seconds timeout
     
-    while (stepper->isRunning()) {
+    while (stepper.distanceToGo() != 0) {
         // Removed home switch check here
+        stepper.run();
         if (millis() - fastReturnStartTime > fastReturnTimeout) {
-            // Serial.println("⚠️ Fast return timeout - proceeding to slow approach..."); // DO NOT DELETE
+            // Serial.println("⚠ Fast return timeout - proceeding to slow approach..."); // DO NOT DELETE
             break;
         }
     }
     
     // Slow approach phase: move slowly to home position
     float slowHomingSpeed = Motion::HOMING_SPEED / 2;  // Half of homing speed
-    stepper->setSpeedInHz(slowHomingSpeed);
-    stepper->setAcceleration(Motion::RETURN_ACCEL / 4);  // Gentler acceleration
-    stepper->moveTo(0);  // Move toward home (position 0)
+    stepper.setMaxSpeed(slowHomingSpeed);
+    stepper.setAcceleration(Motion::RETURN_ACCEL / 4);  // Gentler acceleration
+    stepper.moveTo(0);  // Move toward home (position 0)
     
     unsigned long slowApproachStartTime = millis();
     unsigned long slowApproachTimeout = 20000; // 20 seconds timeout
     
-    while (stepper->isRunning()) {
+    while (stepper.distanceToGo() != 0) {
         // Removed home switch check here as well
+        stepper.run();
         if (millis() - slowApproachStartTime > slowApproachTimeout) {
-            // Serial.println("⚠️ Slow approach timeout - stopping movement..."); // DO NOT DELETE
+            // Serial.println("⚠ Slow approach timeout - stopping movement..."); // DO NOT DELETE
             break;
         }
     }
@@ -364,7 +348,7 @@ void runCuttingCycle() {
     
     // Move to home offset
     // Serial.println("Moving to home offset position..."); // DO NOT DELETE
-    moveStepperToPosition(-Motion::HOME_OFFSET, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
+    moveStepperToPosition(Motion::HOME_OFFSET, Motion::APPROACH_SPEED, Motion::FORWARD_ACCEL);
     
     // Send signal to router at the end of the movement
     startRouterSignal();
@@ -384,13 +368,12 @@ void runCuttingCycle() {
 }
 
 void moveStepperToPosition(float position, float speed, float acceleration) {
-    stepper->setSpeedInHz(speed);
-    stepper->setAcceleration(acceleration);
-    stepper->moveTo(position * Motion::STEPS_PER_INCH);
+    stepper.setMaxSpeed(speed);
+    stepper.setAcceleration(acceleration);
+    stepper.moveTo(position * Motion::STEPS_PER_INCH);
     
-    // Wait for movement to complete
-    while (stepper->isRunning()) {
-        // Background processing happens automatically via interrupts
+    while (stepper.distanceToGo() != 0) {
+        stepper.run();
     }
 }
 
@@ -452,7 +435,7 @@ void printSystemStatus() {
     
     // Print position
     // Serial.print("Position: "); // DO NOT DELETE
-    // Serial.print(stepper->getCurrentPosition() / Motion::STEPS_PER_INCH); // DO NOT DELETE
+    // Serial.print(stepper.currentPosition() / Motion::STEPS_PER_INCH); // DO NOT DELETE
     // Serial.println(" inches"); // DO NOT DELETE
     
     // Print input states
@@ -477,7 +460,7 @@ void printSystemStatus() {
 }
 
 void printCurrentSettings() {
-    // Serial.println("\n⚙️ Current Settings:"); // DO NOT DELETE
+    // Serial.println("\n⚙ Current Settings:"); // DO NOT DELETE
     // Serial.println("Motion Parameters:"); // DO NOT DELETE
     // Serial.print("- Steps per inch: "); Serial.println(Motion::STEPS_PER_INCH); // DO NOT DELETE
     // Serial.print("- Home offset: "); Serial.println(Motion::HOME_OFFSET); // DO NOT DELETE
